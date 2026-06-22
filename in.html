@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI Interviewer with Face Monitoring & Live OCR</title>
+  <style>
+    #neuralCanvas {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      z-index: -1;
+      background: radial-gradient(ellipse at center, #0f2027 0%, #203a43 50%, #2c5364 100%);
+    }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #f4f4f9;
+      text-align: center;
+      padding-top: 120px;
+    }
+    #container {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      width: 700px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+      position: relative;
+      z-index: 1;
+    }
+    button {
+      padding: 10px 20px;
+      margin: 10px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    .primary { background: #007bff; color: white; }
+    .secondary { background: #555; color: white; }
+    .feedback { margin-top: 20px; font-weight: bold; }
+    .report {
+      text-align: left;
+      margin-top: 20px;
+      background: #fafafa;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    input[type="text"], input[type="password"] {
+      padding: 10px;
+      width: 80%;
+      margin: 10px auto;
+      display: block;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+    #login-form, #interview-section, #recruiter-section {
+      display: none;
+    }
+    video {
+      border: 2px solid #333;
+      width: 320px;
+      height: 240px;
+      margin-top: 10px;
+    }
+    #face-status {
+      margin-top: 10px;
+      font-weight: bold;
+    }
+    #ocr-live-output {
+      margin-top: 10px;
+      font-size: 16px;
+      min-height: 1.2em;
+      background: #fafafa;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+    }
+    #ocr-canvas {
+      display: none;
+    }
+    #tab-warning {
+      color: red;
+      font-weight: bold;
+      margin-top: 10px;
+    }
+  </style>
+  <script defer src="https://cdn.jsdelivr.net/npm/face-api.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@2.1.5/dist/tesseract.min.js"></script>
+</head>
+
+<body>
+  <marquee direction="left" style="position: absolute; top: 50px; width: 100%; color:white; font-size: large;">
+    <h1>👋 Welcome To Interview</h1>
+  </marquee>
+  <canvas id="neuralCanvas"></canvas>
+
+  <div id="container">
+    <div id="role-selection">
+      <h1>🔐 AI Interviewer Login</h1>
+      <p>Please select your role to continue:</p>
+      <button class="primary" onclick="selectRole('candidate')">Candidate Login</button>
+      <button class="secondary" onclick="selectRole('recruiter')">Recruiter Login</button>
+    </div>
+
+    <div id="login-form">
+      <h2 id="login-title">Login</h2>
+      <input type="text" id="username" placeholder="Username" />
+      <input type="password" id="password" placeholder="Password" />
+      <button class="primary" onclick="handleLogin()">Login</button>
+      <p id="login-error" style="color: red;"></p>
+    </div>
+
+    <div id="interview-section">
+      <h1>🎤 AI Interviewer</h1>
+      <p id="question">Click "Start Interview" to begin.</p>
+      <p><b>Time Left:</b> <span id="timer-display">2:00</span></p>
+      <button class="primary" onclick="startInterview()">Start Interview</button>
+      <button class="secondary" onclick="startListening()" id="voiceBtn" disabled>Answer by Voice</button>
+      <button class="secondary" onclick="finishInterview()" id="finishBtn" disabled>Finish Interview</button>
+      <button class="secondary" onclick="logoutCandidate()" id="logoutBtn" style="display:none;">Logout</button>
+      <p><b>Your Answer:</b> <span id="answer"></span></p>
+      <p class="feedback"><b>Feedback:</b> <span id="feedback"></span></p>
+
+      <p id="face-status">⏳ Face status unknown</p>
+      <p id="tab-warning"></p>
+
+      <hr />
+      <h3>Live OCR from Camera</h3>
+      <video id="live-ocr-video" autoplay muted></video>
+      <canvas id="ocr-canvas" width="320" height="240"></canvas>
+      <p>Detected Text:</p>
+      <div id="ocr-live-output">Waiting…</div>
+
+      <hr />
+      <div id="report" class="report" style="display:none;"></div>
+      <button class="secondary" id="downloadBtn" onclick="downloadReport()" style="display:none;">Download Report</button>
+    </div>
+
+    <div id="recruiter-section">
+      <h1>📊 Recruiter Dashboard</h1>
+      <p>Welcome, Recruiter! This dashboard is under development.</p>
+    </div>
+  </div>
+
+  <script>
+    // Neural background
+    const neuralCanvas = document.getElementById("neuralCanvas");
+    const ctx = neuralCanvas.getContext("2d");
+    neuralCanvas.width = window.innerWidth;
+    neuralCanvas.height = window.innerHeight;
+    let nodes = [];
+    const NODE_COUNT = 80;
+    for (let i = 0; i < NODE_COUNT; i++) {
+      nodes.push({
+        x: Math.random() * neuralCanvas.width,
+        y: Math.random() * neuralCanvas.height,
+        vx: (Math.random() - 0.5) * 0.6,
+        vy: (Math.random() - 0.5) * 0.6,
+        radius: Math.random() * 2 + 1
+      });
+    }
+    function drawNetwork() {
+      ctx.clearRect(0, 0, neuralCanvas.width, neuralCanvas.height);
+      for (let i = 0; i < NODE_COUNT; i++) {
+        const nodeA = nodes[i];
+        ctx.beginPath();
+        ctx.arc(nodeA.x, nodeA.y, nodeA.radius, 0, Math.PI * 2);
+        ctx.fillStyle = "#00f7ff";
+        ctx.fill();
+        for (let j = i + 1; j < NODE_COUNT; j++) {
+          const nodeB = nodes[j];
+          const dx = nodeA.x - nodeB.x;
+          const dy = nodeA.y - nodeB.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 120) {
+            ctx.beginPath();
+            ctx.moveTo(nodeA.x, nodeA.y);
+            ctx.lineTo(nodeB.x, nodeB.y);
+            ctx.strokeStyle = `rgba(0, 247, 255, ${1 - dist / 120})`;
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+          }
+        }
+        nodeA.x += nodeA.vx;
+        nodeA.y += nodeA.vy;
+        if (nodeA.x < 0 || nodeA.x > neuralCanvas.width) nodeA.vx *= -1;
+        if (nodeA.y < 0 || nodeA.y > neuralCanvas.height) nodeA.vy *= -1;
+      }
+      requestAnimationFrame(drawNetwork);
+    }
+    drawNetwork();
+    window.addEventListener("resize", () => {
+      neuralCanvas.width = window.innerWidth;
+      neuralCanvas.height = window.innerHeight;
+    });
+
+    // Interview logic
+    const synth = window.speechSynthesis;
+    const questions = [
+      "Tell me about yourself.",
+      "What are your strengths and weaknesses?",
+      "Why do you want to work here?",
+      "Describe a challenging project you worked on.",
+      "Where do you see yourself in 5 years?"
+    ];
+    let role = "";
+    let asked = [];
+    let currentQuestion = "";
+    let history = [];
+    let timer = null;
+    let timeLeft = 120;
+    let faceDetectionActive = false;
+    let facePresent = true;
+
+    // Streams
+    let faceStream = null;
+    let ocrStream = null;
+
+    let tabSwitchCount = 0;
+
+    const users = {
+      candidate: { username: "all the best", password: "1234" },
+      recruiter: { username: "recruiter", password: "admin" }
+    };
+
+    function selectRole(selectedRole) {
+      role = selectedRole;
+      document.getElementById("role-selection").style.display = "none";
+      document.getElementById("login-form").style.display = "block";
+      document.getElementById("login-title").innerText =
+        `Login as ${role.charAt(0).toUpperCase() + role.slice(1)}`;
+    }
+
+    function handleLogin() {
+      const username = document.getElementById("username").value.trim();
+      const password = document.getElementById("password").value.trim();
+      const error = document.getElementById("login-error");
+      if (username === users[role].username && password === users[role].password) {
+        document.getElementById("login-form").style.display = "none";
+        if (role === "candidate") {
+          document.getElementById("interview-section").style.display = "block";
+          document.getElementById("logoutBtn").style.display = "inline-block";
+          startFaceDetection();
+          startLiveOCR();
+        } else {
+          document.getElementById("recruiter-section").style.display = "block";
+        }
+      } else {
+        error.innerText = "Invalid credentials. Try again.";
+      }
+    }
+
+    function speak(text) {
+      const utterance = new SpeechSynthesisUtterance(text);
+      synth.speak(utterance);
+    }
+
+    function startInterview() {
+      if (asked.length >= questions.length) {
+        document.getElementById("question").innerText = "✅ Interview completed.";
+        document.getElementById("voiceBtn").disabled = true;
+        document.getElementById("finishBtn").disabled = false;
+        return;
+      }
+
+      let q;
+      do {
+        q = questions[Math.floor(Math.random() * questions.length)];
+      } while (asked.includes(q));
+      asked.push(q);
+      currentQuestion = q;
+      document.getElementById("question").innerText = q;
+      document.getElementById("voiceBtn").disabled = false;
+      document.getElementById("finishBtn").disabled = true;
+      document.getElementById("answer").innerText = "";
+      document.getElementById("feedback").innerText = "";
+      speak(q);
+
+      clearInterval(timer);
+      timeLeft = 120;
+      timer = setInterval(() => {
+        timeLeft--;
+        const mins = Math.floor(timeLeft / 60);
+        const secs = timeLeft % 60;
+        document.getElementById("timer-display").innerText =
+          `${mins}:${secs.toString().padStart(2, '0')}`;
+
+        if (!facePresent) {
+          clearInterval(timer);
+          document.getElementById("feedback").innerText =
+            "🚫 Face lost. Please look at the camera.";
+          speak("Face lost. Please look at the camera.");
+          document.getElementById("voiceBtn").disabled = true;
+          return;
+        }
+
+        if (timeLeft <= 0) {
+          clearInterval(timer);
+          document.getElementById("voiceBtn").disabled = true;
+          document.getElementById("feedback").innerText =
+            "⏰ Time's up! Please proceed to the next question.";
+          speak("Time's up! Please proceed to the next question.");
+        }
+      }, 1000);
+    }
+
+    const recognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition
+        ? new (window.SpeechRecognition || window.webkitSpeechRecognition)()
+        : null;
+
+    function startListening() {
+      if (!recognition) {
+        alert("❌ Speech recognition not supported in this browser.");
+        return;
+      }
+      recognition.lang = 'en-US';
+      recognition.start();
+
+      recognition.onresult = function (event) {
+        const result = event.results[0][0].transcript.trim();
+        const confidence = event.results[0][0].confidence;
+        document.getElementById("answer").innerText = result;
+
+        const feedbackObj = generateFeedback(result, confidence);
+        document.getElementById("feedback").innerHTML = `
+          <b>Voice Accuracy:</b> ${(confidence * 100).toFixed(1)}%<br>
+          ${feedbackObj.text}
+        `;
+
+        history.push({ question: currentQuestion, answer: result, feedback: feedbackObj });
+
+        clearInterval(timer);
+        document.getElementById("voiceBtn").disabled = true;
+        document.getElementById("finishBtn").disabled = false;
+      };
+
+      recognition.onerror = function (event) {
+        document.getElementById("feedback").innerText = "Error: " + event.error;
+      };
+    }
+
+    function generateFeedback(answer, confidence = 0) {
+      let feedback = { text: "", score: 0, confidence };
+      if (!answer || answer.length < 5) {
+        feedback.text = "Answer is too short. Try to elaborate.";
+        feedback.score = 0;
+      } else {
+        const qWords = currentQuestion.toLowerCase().split(/\W+/);
+        const aWords = answer.toLowerCase().split(/\W+/);
+        let common = 0;
+        qWords.forEach(w => {
+          if (aWords.includes(w)) common++;
+        });
+        const score = Math.min(100, Math.floor((common / qWords.length) * 100));
+        feedback.score = score;
+
+        let relevanceText = score < 30
+          ? "⚠️ Answer may be off-topic."
+          : "✅ Answer seems relevant.";
+
+        feedback.text = `
+          Similarity: ${score}% (matched ${common}/${qWords.length} words)<br>
+          ${relevanceText}
+        `;
+      }
+      return feedback;
+    }
+
+    function stopAllStreams(stream) {
+      if (!stream) return;
+      stream.getTracks().forEach(track => {
+        try {
+          track.stop();
+        } catch (e) {
+          console.warn("Error stopping track:", e);
+        }
+      });
+    }
+
+    function finishInterview() {
+      clearInterval(timer);
+      let reportHTML = "<h3>📝 Interview Report</h3>";
+      history.forEach((item, index) => {
+        reportHTML += `<p><strong>Q${index + 1}: ${item.question}</strong><br>
+          Answer: ${item.answer}<br>
+          Feedback: ${item.feedback.text} (score: ${item.feedback.score}%)</p>`;
+      });
+      reportHTML += `<hr><p><strong>Tab Switches:</strong> ${tabSwitchCount}</p>`;
+
+      const reportDiv = document.getElementById("report");
+      reportDiv.innerHTML = reportHTML;
+      reportDiv.style.display = "block";
+      document.getElementById("downloadBtn").style.display = "inline-block";
+
+      // Stop cameras
+      stopAllStreams(faceStream);
+      stopAllStreams(ocrStream);
+      faceDetectionActive = false;
+      facePresent = false;
+
+      // Store in localStorage
+      localStorage.setItem("interviewReport", reportHTML);
+      localStorage.setItem("tabSwitches", tabSwitchCount);
+
+      speak("Interview completed. Thank you.");
+    }
+
+    function logoutCandidate() {
+      // Stop everything and reset UI
+      stopAllStreams(faceStream);
+      stopAllStreams(ocrStream);
+      faceDetectionActive = false;
+      facePresent = false;
+
+      // Clear UI, redirect or reload
+      alert("You logged out.");
+      location.reload();
+    }
+
+    function downloadReport() {
+      const reportText = document.getElementById("report").innerText;
+      const blob = new Blob([reportText], { type: "text/plain" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "Interview_Report.txt";
+      link.click();
+    }
+
+    // Visibility / tab switch detection
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        tabSwitchCount++;
+        const warningMsg = `⚠️ Tab switch detected (${tabSwitchCount})`;
+        document.getElementById("tab-warning").innerText = warningMsg;
+        alert("⚠️ Please stay in this tab during the interview.");
+      }
+    });
+
+    // Anti cheat: blur / copy / paste
+    window.addEventListener("blur", () => {
+      // window lost focus
+      alert("⚠️ Window lost focus. Please stay on this page.");
+    });
+    document.addEventListener("copy", (e) => {
+      alert("⚠️ Copying not allowed.");
+      e.preventDefault();
+    });
+    document.addEventListener("paste", (e) => {
+      alert("⚠️ Pasting not allowed.");
+      e.preventDefault();
+    });
+
+    // Restore saved report if any
+    window.addEventListener("load", () => {
+      const saved = localStorage.getItem("interviewReport");
+      const ts = localStorage.getItem("tabSwitches");
+      if (saved) {
+        document.getElementById("interview-section").style.display = "block";
+        document.getElementById("logoutBtn").style.display = "inline-block";
+        document.getElementById("report").innerHTML = saved;
+        document.getElementById("report").style.display = "block";
+        document.getElementById("downloadBtn").style.display = "inline-block";
+        if (ts) {
+          tabSwitchCount = parseInt(ts, 10);
+          document.getElementById("tab-warning").innerText = `⚠️ Tab switches: ${tabSwitchCount}`;
+        }
+      }
+    });
+
+    // Face detection
+    async function startFaceDetection() {
+      await faceapi.nets.tinyFaceDetector.loadFromUri('https://cdn.jsdelivr.net/npm/face-api.js/weights');
+      const video = document.createElement("video");
+      video.id = "videoElem";
+      video.style.display = "none";
+      document.body.appendChild(video);
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        faceStream = stream;
+        video.srcObject = stream;
+      } catch (err) {
+        console.error("Cannot access webcam (face detection):", err);
+        document.getElementById("face-status").innerText = "❌ Camera error";
+        return;
+      }
+
+      video.addEventListener('play', () => {
+        faceDetectionActive = true;
+        const statusEl = document.getElementById("face-status");
+
+        const check = async () => {
+          if (!faceDetectionActive) return;
+          try {
+            const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions());
+            if (detection) {
+              facePresent = true;
+              statusEl.innerText = "✅ Face detected";
+            } else {
+              facePresent = false;
+              statusEl.innerText = "🚫 Face NOT detected";
+            }
+          } catch (e) {
+            console.error("Detection error:", e);
+          }
+          setTimeout(check, 500);
+        };
+
+        check();
+      });
+    }
+
+    // OCR
+    function startLiveOCR() {
+      const videoOcr = document.getElementById("live-ocr-video");
+      const canvas = document.getElementById("ocr-canvas");
+      const ctx2 = canvas.getContext("2d");
+      const outputEl = document.getElementById("ocr-live-output");
+
+      navigator.mediaDevices.getUserMedia({ video: true })
+        .then(stream => {
+          ocrStream = stream;
+          videoOcr.srcObject = stream;
+        })
+        .catch(err => {
+          console.error("Cannot access webcam (OCR):", err);
+          outputEl.innerText = "❌ OCR camera error";
+        });
+
+      setInterval(() => {
+        if (!facePresent) {
+          outputEl.innerText = "Waiting for face...";
+          return;
+        }
+        ctx2.drawImage(videoOcr, 0, 0, canvas.width, canvas.height);
+        Tesseract.recognize(canvas, 'eng')
+          .then(({ data: { text } }) => {
+            const txt = text.trim();
+            outputEl.innerText = txt.length > 0 ? txt : "(No text)";
+          })
+          .catch(err => {
+            console.error("OCR error:", err);
+          });
+      }, 3000);
+    }
+
+  </script>
+</body>
+</html>
